@@ -1,0 +1,60 @@
+// Currency is assumed to be always Rupees only
+
+EXPENSE_CATEGORY AS ENUM (
+    -- Essential Needs
+    'HOUSING',
+    'UTILITIES',
+    'GROCERIES',
+    'TRANSPORTATION',
+    'TELECOM',
+    'HEALTHCARE',
+    'DEBT_REPAYMENT',
+    'EDUCATION',
+    'PETS',
+
+    -- Lifestyle & Wants
+    'DINING_OUT',
+    'ENTERTAINMENT',
+    'SHOPPING',
+    'TRAVEL',
+    'HOBBIES_FITNESS',
+    'GIFTS_DONATIONS',
+    'PERSONAL_CARE',
+    'SUBSCRIPTIONS',
+
+    -- Savings & Investments
+    'EMERGENCY_FUND',
+    'INVESTMENTS',
+    'RETIREMENT',
+    'SAVINGS_GOALS',
+
+    -- Fallback
+    'UNCATEGORIZED'
+);
+
+users {
+    id            UUID PK
+    email         TEXT UNIQUE NOT NULL
+    password_hash TEXT NOT NULL
+    name          TEXT NOT NULL
+    created_at    TIMESTAMPTZ DEFAULT now()
+    updated_at    TIMESTAMPTZ
+}
+
+expenses {
+    id               UUID PK
+    user_id          UUID FK → users.id NOT NULL
+    date             DATE NOT NULL
+    merchant         TEXT
+    amount           NUMERIC(12,2) NOT NULL CHECK (amount > 0)
+    description      TEXT
+    items            JSONB
+    expense_category ENUM NOT NULL
+    confidence       FLOAT NOT NULL CHECK (confidence BETWEEN 0 AND 1)
+    input_method     ENUM('MANUAL', 'TEXT_PASTE', 'IMAGE') NOT NULL
+    created_at       TIMESTAMPTZ DEFAULT now()
+    updated_at       TIMESTAMPTZ
+
+    INDEX (user_id, expense_category)
+    INDEX (user_id, date)
+}

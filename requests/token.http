@@ -1,0 +1,9 @@
+### Supabase Sign In (Password Grant)
+POST https://jiakxrvjgrtqepfjtrss.supabase.co/auth/v1/token?grant_type=password
+apikey: sb_publishable_mbwqwm2qe-8MfgJxw4ImCA_csEOBWIP
+Content-Type: application/json
+
+{
+  "email": "vexivep465@iconcubic.com",
+  "password": "vexivep465@iconcubic.com"
+}
