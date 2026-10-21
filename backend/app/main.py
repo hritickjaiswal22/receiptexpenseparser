@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app import database
 from app.auth import get_current_user
+from app.llm_client import get_llm_response
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,6 +20,9 @@ class ExpenseCreate(BaseModel):
     confidence: float
     input_method: str  # e.g., "MANUAL", "TEXT_PASTE", "IMAGE"
     items: Optional[List[Dict[str, Any]]] = None
+
+class ExpenseText(BaseModel):
+    text: str
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -64,6 +68,15 @@ async def create_expense(
     except Exception as e:
         # Handle Supabase/PostgREST errors
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+@app.post("/llm", status_code=201)
+async def parse_expense_endpoint(payload: ExpenseText):
+    try:
+        # In a real app, you'd craft a specific prompt here
+        result = get_llm_response(payload.text) 
+        return {"raw_response": result}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
 
 
 @app.get("/health/", status_code=201)
