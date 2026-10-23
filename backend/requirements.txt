@@ -12,6 +12,7 @@ detect-installer==0.2.1
 dnspython==2.9.0
 email-validator==2.3.0
 fastapi==0.146.0
+fastapi-ai-sdk==0.1.0
 fastapi-cli==0.0.32
 fastapi-cloud-cli==0.26.0
 fastar==0.12.0
