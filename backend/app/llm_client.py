@@ -23,6 +23,7 @@ async def get_llm_response(prompt: str):
         stream=True,
         reasoning={"effort": "low"},
     )
+    yielded_any = False
     async for chunk in stream:
         content = chunk.choices[0].delta.content
 
