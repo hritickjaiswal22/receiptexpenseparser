@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 from typing import List, Literal
 from fastapi_ai_sdk import AIStreamBuilder, ai_endpoint
+from fastapi.responses import StreamingResponse
 
 from app import database
 from app.auth import get_current_user
@@ -84,14 +85,14 @@ async def create_expense(
 @app.post("/llm", status_code=201)
 async def parse_expense_endpoint(payload: ChatRequest):
     try:
-        # Extract the user's text from the last message
         last_message = payload.messages[-1]
         user_text = "".join(
             part.text for part in last_message.parts if part.type == "text"
         )
-        
-        # Call your UNCHANGED helper function
-        return get_llm_response(user_text)
+        return StreamingResponse(
+            get_llm_response(user_text),
+            media_type="text/plain",
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
 

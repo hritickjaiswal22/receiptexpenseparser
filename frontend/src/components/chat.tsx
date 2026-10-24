@@ -1,6 +1,7 @@
 "use client";
 
 // https://chat.deepseek.com/a/chat/s/90808de7-c8d4-4719-bb84-989412e5f1af
+// https://www.kimi.ai/chat/1a16b763-3982-8c24-8000-09ba29a5ca60
 
 import { useChat } from "@ai-sdk/react";
 import { useState } from "react";
@@ -53,7 +54,7 @@ function ChatApp() {
                   {message.parts.map((part, index) => {
                     if (part.type === "text") {
                       return (
-                        <p key={index} className="whitespace-pre-wrap">
+                        <p key={index} className="text-black">
                           {part.text}
                         </p>
                       );
