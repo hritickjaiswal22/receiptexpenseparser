@@ -1,13 +1,5 @@
-import Image from "next/image";
-
-import Test from "@/components/test";
+import ChatApp from "@/components/chat";
 
 export default function Home() {
-  return (
-    <div>
-      <h1>Hello World</h1>
-
-      <Test />
-    </div>
-  );
+  return <ChatApp />;
 }

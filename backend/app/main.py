@@ -1,8 +1,11 @@
 from contextlib import asynccontextmanager
 from datetime import date
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI,Body, Depends, HTTPException
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
+from typing import List, Literal
+from fastapi_ai_sdk import AIStreamBuilder, ai_endpoint
+from fastapi.responses import StreamingResponse
 
 from app import database
 from app.auth import get_current_user
@@ -21,8 +24,18 @@ class ExpenseCreate(BaseModel):
     input_method: str  # e.g., "MANUAL", "TEXT_PASTE", "IMAGE"
     items: Optional[List[Dict[str, Any]]] = None
 
-class ExpenseText(BaseModel):
+# Your existing request model
+class TextPart(BaseModel):
+    type: Literal["text"]
     text: str
+
+class UIMessage(BaseModel):
+    id: str
+    role: Literal["user", "assistant", "system"]
+    parts: List[TextPart]
+
+class ChatRequest(BaseModel):
+    messages: List[UIMessage]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -70,11 +83,16 @@ async def create_expense(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.post("/llm", status_code=201)
-async def parse_expense_endpoint(payload: ExpenseText):
+async def parse_expense_endpoint(payload: ChatRequest):
     try:
-        # In a real app, you'd craft a specific prompt here
-        result = get_llm_response(payload.text) 
-        return {"raw_response": result}
+        last_message = payload.messages[-1]
+        user_text = "".join(
+            part.text for part in last_message.parts if part.type == "text"
+        )
+        return StreamingResponse(
+            get_llm_response(user_text),
+            media_type="text/plain",
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
 
