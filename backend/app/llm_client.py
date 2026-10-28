@@ -21,7 +21,7 @@ async def get_llm_response(prompt: str):
         ],
         temperature=0.2,
         stream=True,
-        reasoning={"effort": "low"},
+        reasoning_effort="low"
     )
     yielded_any = False
     async for chunk in stream:
@@ -31,7 +31,5 @@ async def get_llm_response(prompt: str):
             print(f"[{time.time():.3f}] yielding: {content!r}", flush=True)
             yielded_any = True
             yield content
-            
-        if not yielded_any:
-            yield "(The model returned an empty response — try again.)"
+
         
