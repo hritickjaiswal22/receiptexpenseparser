@@ -4,17 +4,46 @@
 // https://www.kimi.ai/chat/1a16b763-3982-8c24-8000-09ba29a5ca60
 
 import { useChat } from "@ai-sdk/react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DefaultChatTransport, TextStreamChatTransport } from "ai";
+import { useRouter } from "next/navigation";
+
+import { createClient } from "@/lib/supabase";
 
 function ChatApp() {
   const [input, setInput] = useState("");
+  const [user, setUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const router = useRouter();
+  const supabase = createClient();
+
+  const transport = useMemo(
+    () =>
+      new TextStreamChatTransport({
+        api: "http://localhost:8000/llm",
+        fetch: async (input, init) => {
+          const supabase = createClient();
+          const {
+            data: { session },
+          } = await supabase.auth.getSession();
+
+          if (!session) throw new Error("Not authenticated");
+
+          return fetch(input, {
+            ...init,
+            headers: {
+              ...init?.headers,
+              Authorization: `Bearer ${session.access_token}`,
+            },
+          });
+        },
+      }),
+    [],
+  );
 
   // 2. Initialize useChat using the modern transport pattern
   const { messages, sendMessage, error } = useChat({
-    transport: new TextStreamChatTransport({
-      api: "http://localhost:8000/llm", // Your backend route API endpoint
-    }),
+    transport,
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -27,10 +56,23 @@ function ChatApp() {
     setInput(""); // Clear input
   };
 
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (!data.user) router.replace("/login");
+      else setUser(data.user);
+      setAuthLoading(false);
+    });
+  }, []);
+
   console.log(messages);
+  console.log(user);
+
+  if (authLoading) return <h1>Auth Loading...</h1>;
+
+  if (!user) return null;
 
   return (
-    <section className="bg-gpt-main text-gray-100 flex h-screen overflow-hidden font-sans antialiased selection:bg-gray-700">
+    <>
       <div className="flex w-full h-full relative">
         <main className="flex-1 flex flex-col h-full min-w-0 relative bg-gpt-main">
           <div
@@ -85,7 +127,7 @@ function ChatApp() {
           </div>
         </main>
       </div>
-    </section>
+    </>
   );
 }
 
