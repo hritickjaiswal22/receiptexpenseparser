@@ -30,7 +30,7 @@ function ChatApp() {
   console.log(messages);
 
   return (
-    <section className="bg-gpt-main text-gray-100 flex h-screen overflow-hidden font-sans antialiased selection:bg-gray-700">
+    <>
       <div className="flex w-full h-full relative">
         <main className="flex-1 flex flex-col h-full min-w-0 relative bg-gpt-main">
           <div
@@ -85,7 +85,7 @@ function ChatApp() {
           </div>
         </main>
       </div>
-    </section>
+    </>
   );
 }
 
