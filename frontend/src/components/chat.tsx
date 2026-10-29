@@ -4,7 +4,7 @@
 // https://www.kimi.ai/chat/1a16b763-3982-8c24-8000-09ba29a5ca60
 
 import { useChat } from "@ai-sdk/react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DefaultChatTransport, TextStreamChatTransport } from "ai";
 import { useRouter } from "next/navigation";
 
@@ -17,11 +17,33 @@ function ChatApp() {
   const router = useRouter();
   const supabase = createClient();
 
+  const transport = useMemo(
+    () =>
+      new TextStreamChatTransport({
+        api: "http://localhost:8000/llm",
+        fetch: async (input, init) => {
+          const supabase = createClient();
+          const {
+            data: { session },
+          } = await supabase.auth.getSession();
+
+          if (!session) throw new Error("Not authenticated");
+
+          return fetch(input, {
+            ...init,
+            headers: {
+              ...init?.headers,
+              Authorization: `Bearer ${session.access_token}`,
+            },
+          });
+        },
+      }),
+    [],
+  );
+
   // 2. Initialize useChat using the modern transport pattern
   const { messages, sendMessage, error } = useChat({
-    transport: new TextStreamChatTransport({
-      api: "http://localhost:8000/llm", // Your backend route API endpoint
-    }),
+    transport,
   });
 
   const handleSubmit = (e: React.FormEvent) => {

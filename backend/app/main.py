@@ -83,12 +83,13 @@ async def create_expense(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
 @app.post("/llm", status_code=201)
-async def parse_expense_endpoint(payload: ChatRequest):
+async def parse_expense_endpoint(payload: ChatRequest,user: dict = Depends(get_current_user)):
     try:
         last_message = payload.messages[-1]
         user_text = "".join(
             part.text for part in last_message.parts if part.type == "text"
         )
+        print(user)
         return StreamingResponse(
             get_llm_response(user_text),
             media_type="text/plain",
