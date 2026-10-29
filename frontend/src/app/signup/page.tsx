@@ -1,10 +1,42 @@
 "use client";
 
-import { UserPlus, User, Mail, Lock, Eye, ShieldCheck } from "lucide-react";
+import { UserPlus, User, Mail, Lock, Eye, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { createClient } from "@/lib/supabase";
 
 function SignupPage() {
   const router = useRouter();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const supabase = createClient();
+  const [loading, setLoading] = useState(false);
+
+  const handleSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !password) return;
+
+    console.log(email, password);
+
+    try {
+      setLoading(true);
+
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+
+      router.push("/");
+    } catch (error) {
+      console.log(error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <section
@@ -24,8 +56,8 @@ function SignupPage() {
           </p>
         </div>
 
-        <form id="signup-form" className="space-y-4">
-          <div>
+        <form id="signup-form" className="space-y-4" onSubmit={handleSignup}>
+          {/* <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-[#b4b4b4] mb-1.5">
               Full Name
             </label>
@@ -41,7 +73,7 @@ function SignupPage() {
                 className="w-full bg-[#212121] border border-dark-border rounded-xl pl-10 pr-4 py-2.5 text-sm text-[#ececec] placeholder-[#676767] focus:outline-none focus:border-[#10a37f] focus:ring-1 focus:ring-[#10a37f] transition"
               />
             </div>
-          </div>
+          </div> */}
 
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-[#b4b4b4] mb-1.5">
@@ -55,6 +87,8 @@ function SignupPage() {
                 type="email"
                 id="signup-email"
                 required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 placeholder="alex.smith@example.com"
                 className="w-full bg-[#212121] border border-dark-border rounded-xl pl-10 pr-4 py-2.5 text-sm text-[#ececec] placeholder-[#676767] focus:outline-none focus:border-[#10a37f] focus:ring-1 focus:ring-[#10a37f] transition"
               />
@@ -73,6 +107,8 @@ function SignupPage() {
                 type="password"
                 id="signup-password"
                 required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
                 className="w-full bg-[#212121] border border-dark-border rounded-xl pl-10 pr-10 py-2.5 text-sm text-[#ececec] placeholder-[#676767] focus:outline-none focus:border-[#10a37f] focus:ring-1 focus:ring-[#10a37f] transition"
               />
@@ -84,7 +120,7 @@ function SignupPage() {
               </button>
             </div>
 
-            <div className="mt-2">
+            {/* <div className="mt-2">
               <div className="flex justify-between items-center text-[10px] text-[#b4b4b4] mb-1">
                 <span>
                   Strength:
@@ -107,10 +143,10 @@ function SignupPage() {
                   className="h-full w-1/3 bg-[#383838] transition-colors"
                 ></div>
               </div>
-            </div>
+            </div> */}
           </div>
 
-          <div>
+          {/* <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-[#b4b4b4] mb-1.5">
               Confirm Password
             </label>
@@ -126,41 +162,18 @@ function SignupPage() {
                 className="w-full bg-[#212121] border border-dark-border rounded-xl pl-10 pr-4 py-2.5 text-sm text-[#ececec] placeholder-[#676767] focus:outline-none focus:border-[#10a37f] focus:ring-1 focus:ring-[#10a37f] transition"
               />
             </div>
-          </div>
-
-          <div className="flex items-start">
-            <input
-              id="terms"
-              type="checkbox"
-              required
-              className="mt-0.5 w-4 h-4 rounded bg-[#212121] border-dark-border text-[#10a37f] focus:ring-[#10a37f]"
-            />
-            <label
-              htmlFor="terms"
-              className="ml-2 block text-xs text-[#b4b4b4]"
-            >
-              I agree to the
-              <a href="#" className="text-[#10a37f] hover:underline">
-                Terms of Service
-              </a>
-              and
-              <a href="#" className="text-[#10a37f] hover:underline">
-                Privacy Policy
-              </a>
-            </label>
-          </div>
+          </div> */}
 
           <button
             type="submit"
             id="signup-btn"
             className="w-full py-3 px-4 cursor-pointer bg-[#10a37f] hover:bg-[#0e8a6c] text-white font-medium rounded-xl transition flex items-center justify-center gap-2"
           >
-            <span id="signup-btn-text">Create Account</span>
-            <i
-              id="signup-spinner"
-              data-lucide="loader-2"
-              className="w-4 h-4 animate-spin hidden"
-            ></i>
+            {loading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <span id="signup-btn-text">Create Account</span>
+            )}
           </button>
         </form>
 

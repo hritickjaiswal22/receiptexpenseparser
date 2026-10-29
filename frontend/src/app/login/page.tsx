@@ -1,10 +1,42 @@
 "use client";
 
-import { Bot, Mail, Lock, Eye } from "lucide-react";
+import { Bot, Mail, Lock, Eye, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+import { createClient } from "@/lib/supabase";
 
 function LoginPage() {
   const router = useRouter();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const supabase = createClient();
+  const [loading, setLoading] = useState(false);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !password) return;
+
+    console.log(email, password);
+
+    try {
+      setLoading(true);
+
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+
+      router.push("/");
+    } catch (error) {
+      console.log(error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <section
@@ -24,7 +56,7 @@ function LoginPage() {
           </p>
         </div>
 
-        <form id="login-form" className="space-y-5">
+        <form id="login-form" className="space-y-5" onSubmit={handleLogin}>
           <div>
             <label className="block text-xs font-semibold uppercase tracking-wider text-[#b4b4b4] mb-2">
               Email Address
@@ -37,6 +69,8 @@ function LoginPage() {
                 type="email"
                 id="login-email"
                 required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 placeholder="alex.smith@example.com"
                 className="w-full bg-[#212121] border border-dark-border rounded-xl pl-10 pr-4 py-2.5 text-sm text-[#ececec] placeholder-[#676767] focus:outline-none focus:border-[#10a37f] focus:ring-1 focus:ring-[#10a37f] transition"
               />
@@ -63,6 +97,8 @@ function LoginPage() {
                 type="password"
                 id="login-password"
                 required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
                 className="w-full bg-[#212121] border border-dark-border rounded-xl pl-10 pr-10 py-2.5 text-sm text-[#ececec] placeholder-[#676767] focus:outline-none focus:border-[#10a37f] focus:ring-1 focus:ring-[#10a37f] transition"
               />
@@ -80,12 +116,11 @@ function LoginPage() {
             id="login-btn"
             className="w-full cursor-pointer py-3 px-4 bg-[#10a37f] hover:bg-[#0e8a6c] text-white font-medium rounded-xl transition flex items-center justify-center gap-2"
           >
-            <span id="login-btn-text">Sign In</span>
-            <i
-              id="login-spinner"
-              data-lucide="loader-2"
-              className="w-4 h-4 animate-spin hidden"
-            ></i>
+            {loading ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <span id="signup-btn-text">Login</span>
+            )}
           </button>
         </form>
 

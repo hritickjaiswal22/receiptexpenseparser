@@ -4,11 +4,18 @@
 // https://www.kimi.ai/chat/1a16b763-3982-8c24-8000-09ba29a5ca60
 
 import { useChat } from "@ai-sdk/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DefaultChatTransport, TextStreamChatTransport } from "ai";
+import { useRouter } from "next/navigation";
+
+import { createClient } from "@/lib/supabase";
 
 function ChatApp() {
   const [input, setInput] = useState("");
+  const [user, setUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const router = useRouter();
+  const supabase = createClient();
 
   // 2. Initialize useChat using the modern transport pattern
   const { messages, sendMessage, error } = useChat({
@@ -27,7 +34,20 @@ function ChatApp() {
     setInput(""); // Clear input
   };
 
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => {
+      if (!data.user) router.replace("/login");
+      else setUser(data.user);
+      setAuthLoading(false);
+    });
+  }, []);
+
   console.log(messages);
+  console.log(user);
+
+  if (authLoading) return <h1>Auth Loading...</h1>;
+
+  if (!user) return null;
 
   return (
     <>
