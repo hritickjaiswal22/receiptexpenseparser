@@ -1,6 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Literal, List, Dict, Any, Optional
+from typing import Literal, List, Dict, Any, Optional, Union
 import datetime 
 
 # Define the shape of the data the client will send
@@ -14,15 +14,21 @@ class ExpenseCreate(BaseModel):
     input_method: str  # e.g., "MANUAL", "TEXT_PASTE", "IMAGE"
     items: Optional[List[Dict[str, Any]]] = None
 
-# Your existing request model
 class TextPart(BaseModel):
     type: Literal["text"]
     text: str
+    state: Literal["streaming", "done"] | None = None
+
+class StepStartPart(BaseModel):
+    type: Literal["step-start"]
+
+# Allow both part types in the list
+UIMessagePart = Union[TextPart, StepStartPart]
 
 class UIMessage(BaseModel):
     id: str
     role: Literal["user", "assistant", "system"]
-    parts: List[TextPart]
+    parts: List[UIMessagePart]
 
 class ChatRequest(BaseModel):
     messages: List[UIMessage]
