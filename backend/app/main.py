@@ -1,41 +1,13 @@
 from contextlib import asynccontextmanager
-from datetime import date
-from fastapi import FastAPI,Body, Depends, HTTPException
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
-from typing import List, Literal
-from fastapi_ai_sdk import AIStreamBuilder, ai_endpoint
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app import database
 from app.auth import get_current_user
 from app.llm_client import get_llm_response
+from app.schemas import ChatRequest
 
 from fastapi.middleware.cors import CORSMiddleware
-
-# Define the shape of the data the client will send
-class ExpenseCreate(BaseModel):
-    date: date
-    merchant: str
-    amount: float
-    description: str | None = None
-    expense_category: str  # e.g., "GROCERIES", "DINING_OUT"
-    confidence: float
-    input_method: str  # e.g., "MANUAL", "TEXT_PASTE", "IMAGE"
-    items: Optional[List[Dict[str, Any]]] = None
-
-# Your existing request model
-class TextPart(BaseModel):
-    type: Literal["text"]
-    text: str
-
-class UIMessage(BaseModel):
-    id: str
-    role: Literal["user", "assistant", "system"]
-    parts: List[TextPart]
-
-class ChatRequest(BaseModel):
-    messages: List[UIMessage]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -55,33 +27,6 @@ app.add_middleware(
     allow_headers=["*"], # Allows all headers (including Authorization)
 )
 
-@app.post("/expenses/", status_code=201)
-async def create_expense(
-    expense: ExpenseCreate,
-    user: dict = Depends(get_current_user)  # This enforces authentication
-):
-    """
-    Dummy endpoint to create a new expense for the authenticated user.
-    """
-    user_id = user["sub"]  # 'sub' is the user's UUID from Supabase Auth
-
-    # Prepare the data for the 'expenses' table
-    expense_data = expense.model_dump(mode="json")
-    expense_data["user_id"] = user_id
-
-    # Use the shared async Supabase client to insert the row
-    try:
-        
-        response = await database.supabase_client.table("expenses").insert(expense_data).execute()
-        
-        if not response.data:
-            raise HTTPException(status_code=500, detail="Failed to insert expense")
-        
-        return {"message": "Expense created", "expense": response.data[0]}
-    except Exception as e:
-        # Handle Supabase/PostgREST errors
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
-
 @app.post("/llm", status_code=201)
 async def parse_expense_endpoint(payload: ChatRequest,user: dict = Depends(get_current_user)):
     try:
@@ -90,8 +35,9 @@ async def parse_expense_endpoint(payload: ChatRequest,user: dict = Depends(get_c
             part.text for part in last_message.parts if part.type == "text"
         )
         print(user)
+        user_id = user["sub"]
         return StreamingResponse(
-            get_llm_response(user_text),
+            get_llm_response(user_text,user_id),
             media_type="text/plain",
         )
     except Exception as e:
