@@ -18,3 +18,5 @@ frontend/.next
 .vscode/
 .idea/
 .DS_Store
+
+server_logs/

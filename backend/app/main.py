@@ -35,6 +35,7 @@ async def parse_expense_endpoint(payload: ChatRequest,user: dict = Depends(get_c
             part.text for part in last_message.parts if part.type == "text"
         )
         print(user)
+        print(payload)
         user_id = user["sub"]
         return StreamingResponse(
             get_llm_response(user_text,user_id),
