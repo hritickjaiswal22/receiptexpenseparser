@@ -18,8 +18,6 @@ function SignupPage() {
     e.preventDefault();
     if (!email || !password) return;
 
-    console.log(email, password);
-
     try {
       setLoading(true);
 
