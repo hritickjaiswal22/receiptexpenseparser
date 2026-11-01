@@ -16,6 +16,7 @@ async def init_supabase():
 
 async def close_supabase():
     """Cleanly close the client when the app shuts down."""
+    global supabase_client
     if supabase_client:
         supabase_client = None
         print("Supabase client closed.")
