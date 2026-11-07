@@ -557,3 +557,87 @@ So the “continuation” is not a server-held promise—it is a **new request t
 | The user “hopefully approves” and it “reaches” the server.                   | The frontend **actively sends a new request** with `sendAutomaticallyWhen`; it is not a passive wait.         |
 
 Your mental model of the **logic** was right; the **transport mechanics** are the part to adjust. The system is intentionally **stateless and connection-agnostic**, which is what makes it survivable across crashes, timeouts, and scale—the very properties you identified as missing in your previous question.
+
+---
+
+Your manual implementation and the PydanticAI version are functionally similar—both run a loop that calls the LLM, executes tools, and feeds results back. The difference is **what the framework absorbs into maintained infrastructure versus what you hand-rolled**. PydanticAI essentially takes your ~80-line `get_llm_response` loop and replaces it with a declarative agent definition plus a protocol adapter, removing significant boilerplate while introducing a new layer of abstraction to learn.
+
+# What PydanticAI's `Agent` handles that your manual loop handled
+
+Your manual `get_llm_response` function is a hand-rolled agent loop. It does the following, all of which PydanticAI now handles for you:
+
+| Concern                        | Your manual implementation                                                                                                                                                                              | PydanticAI `Agent`                                                                                                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tool schema generation**     | You called `pydantic_function_tool(ExpenseToolInput, ...)` to generate the JSON schema from your Pydantic model.                                                                                        | PydanticAI introspects the `@agent.tool` decorated function's type hints and docstring to generate the schema automatically.                                                                       |
+| **Agent loop**                 | You wrote a `while True` loop, streamed chunks, accumulated `tool_calls` deltas, appended assistant messages, executed tools, appended tool results, and looped again.                                  | The `Agent` runs the loop internally: it calls the model, executes tools, feeds results back, and repeats until the model produces a final structured output or a deferred approval request.       |
+| **Tool execution**             | You manually dispatched based on `tc["function"]["name"] == "create_expense"` and parsed the arguments with `json.loads`.                                                                               | Tool dispatch is automatic; PydanticAI parses arguments and validates them against your function signature before calling the tool.                                                                |
+| **Validation & retries**       | You had no validation of the LLM's arguments before execution (only a `try/except json.JSONDecodeError`). If the LLM hallucinated a bad enum or missing field, your tool would fail or insert bad data. | PydanticAI validates tool-call arguments against the schema; if validation fails, it automatically sends the error back to the LLM and retries (configurable via `retries={'output': 3}`).         |
+| **Human-in-the-loop approval** | You had **no approval mechanism at all**—tools ran immediately.                                                                                                                                         | `@agent.tool(requires_approval=True)` marks the tool as deferred; the agent ends the run with `DeferredToolRequests`, and the approval is resolved via `DeferredToolResults`.                      |
+| **Structured output**          | You had no structured output; the LLM's text was streamed raw.                                                                                                                                          | `output_type=[ExpenseToolInput, DeferredToolRequests]` ensures the final output is a validated Pydantic model or a typed deferred request.                                                         |
+| **Dependency injection**       | `user_id` was passed as a function argument and threaded through manually.                                                                                                                              | `ctx.deps` provides typed dependency injection into tools, similar to FastAPI's `Depends`.                                                                                                         |
+| **Streaming transformation**   | You yielded raw text chunks (`yield delta.content`) and manually accumulated tool-call deltas.                                                                                                          | The `VercelAIAdapter` transforms PydanticAI's internal `AgentStreamEvent` objects into protocol-specific events (text deltas, tool-approval requests, tool results) that the frontend understands. |
+
+A migration report from a real project shows the scale of reduction: they deleted **~2,500 lines** of custom loop, extraction, budget, and context plumbing when moving to PydanticAI.
+
+---
+
+# What is being streamed, and what data structures are exposed?
+
+**In the PydanticAI + Vercel AI SDK implementation**, the stream is a **structured SSE event stream** conforming to the Vercel AI Data Stream Protocol. The `VercelAIAdapter` translates PydanticAI's internal `AgentStreamEvent` objects into **typed UI message parts**:
+
+- **`text`** parts: streamed tokens of the assistant's reply.
+- **`tool-create_expense`** parts with states like `"approval-requested"`, `"output-available"`, and `"output-denied"`—these drive the approval UI you built.
+- **`tool-approval-request`** and **`tool-approval-response`** chunks (enabled by `sdk_version=6`) that carry the `approval.id` used in `addToolApprovalResponse`.
+- The frontend's `useChat` hook reduces these parts into `UIMessage` objects, where each message is a collection of typed parts rather than a flat string.
+
+This is why your frontend code can check `part.type === "tool-create_expense"` and `part.state === "approval-requested"`—those structured states **do not exist** in a `text/plain` stream.
+
+---
+
+# What complexity does the framework remove, and what does it introduce?
+
+**Removed complexity:**
+
+- **Boilerplate tool schema generation**: no more `pydantic_function_tool()` calls; decorators handle it.
+- **Manual loop management**: no `while True`, no delta accumulation, no manual message appending.
+- **Validation and retry plumbing**: PydanticAI handles schema validation and error-feedback retries automatically.
+- **Protocol translation**: the `VercelAIAdapter` converts PydanticAI events into Vercel-compatible SSE chunks, so you don't need to manually encode `text/plain` or design your own event format.
+- **Approval gate plumbing**: `requires_approval=True` + `DeferredToolRequests` replaces what would be hundreds of lines of custom pause/resume logic.
+
+**Introduced complexity:**
+
+- **New abstractions to learn**: `Agent`, `RunContext`, `DeferredToolRequests`, `DeferredToolResults`, `UIAdapter`, `AgentStreamEvent`—these are not part of the OpenAI SDK and require reading PydanticAI's docs.
+- **Debugging indirection**: when a stream fails, the error may be in your code, in PydanticAI's loop, in the adapter's event transformation, or in the Vercel AI SDK's parsing. Your manual loop had one stack trace; now there are several layers.
+- **Version coupling**: the approval flow depends on `sdk_version=6` being correctly set and on PydanticAI's Vercel adapter supporting the approval chunk types. Earlier versions had bugs where `tool-approval-request` chunks were not emitted.
+- **Less granular control**: if you need to inspect or mutate the raw stream mid-flight (e.g., for custom logging of every delta), the adapter abstracts that away. You would need to drop down to `Agent.run_stream_events()` or a custom `UIAdapter`.
+
+The trade is standard: **you write less code, but you own less of the execution path.** For a learning project, the manual loop is invaluable because it shows you exactly how function calling works under the hood. For a production app with approvals, retries, and a typed frontend, the framework's abstractions are worth the learning curve—especially since they handle the stateless, multi-run approval flow that would be error-prone to build from scratch.
+
+# Difference between current streamed data and previous streamed data
+
+`useChat` **always** exposes messages as objects with a `parts` array, regardless of transport. The real difference is **what kinds of parts the transport is capable of producing**.
+
+`message.parts.map(...)` was the correct rendering pattern in both versions. The difference is that with `TextStreamChatTransport`, the `parts` array can only ever contain **one kind of part: plain text**. With `DefaultChatTransport`, the `parts` array can contain **structured, typed parts**, including tool-call parts with approval lifecycle states.
+
+### The actual protocol difference
+
+`TextStreamChatTransport` is explicitly designed for **plain-text streaming endpoints**. The AI SDK documentation states that a text stream “contains chunks in plain text” and that “text streams only support basic text data. If you need to stream other types of data such as tool calls, use data streams”. When you use `TextStreamChatTransport`, it “wraps a plain text response in one assistant text part”. So your `parts` array is populated, but it will only ever contain text parts—there is no mechanism in that protocol to represent a tool call, a tool result, or an approval request.
+
+`DefaultChatTransport` uses the **AI SDK data stream protocol**, which is an SSE-based, chunked protocol where each chunk is a JSON event with a type. This protocol defines distinct chunk types for text, tool input, tool output, and tool approval. The lifecycle includes chunks like `text-delta`, `tool-input-available`, `tool-output-available`, `tool-approval-request`, and `tool-approval-response`. Because the transport receives these typed chunks, `useChat` can reduce them into `message.parts` entries with `type: "tool-create_expense"` and states like `"approval-requested"` or `"output-available"`.
+
+### Concrete comparison
+
+|                                      | Earlier version (`TextStreamChatTransport`)                                           | Current version (`DefaultChatTransport`)                                                  |
+| ------------------------------------ | ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| **What the backend sends**           | A raw plain-text byte stream (your `StreamingResponse(..., media_type="text/plain")`) | SSE stream of JSON-encoded UI message chunks (via `VercelAIAdapter`, `sdk_version=6`)     |
+| **What `useChat` parses**            | Plain text chunks, appended into a single text part                                   | Typed chunks (`text-delta`, `tool-input-available`, `tool-approval-request`, etc.)        |
+| **What `message.parts` contains**    | Only `{ type: "text", text: "..." }`                                                  | `text` parts **plus** `tool-*` parts with `state`, `input`, `output`, `approval.id`, etc. |
+| **Can you render tool approval UI?** | **No**—the protocol has no way to express a pending tool call                         | **Yes**—`part.state === "approval-requested"` is available                                |
+
+So your rendering loop (`message.parts.map`) was structurally the same in both versions. What changed is that the **transport protocol** now feeds `useChat` richer, typed chunks, so the `parts` array actually contains tool parts that your current code checks for with `part.type === "tool-create_expense"`.
+
+### Why your earlier `parts.map` still worked
+
+`TextStreamChatTransport` is a compatibility layer: it takes a legacy plain-text stream and wraps it into the modern `UIMessagePart` shape so that `useChat`’s part-based API does not break. That is why your earlier code compiled and rendered text correctly. But it was a **text-only compatibility shim**—it could not represent tool calls, approval requests, or structured outputs. To get those, you have to switch to the data stream protocol via `DefaultChatTransport` (and ensure your backend emits the correct SSE chunks with `sdk_version=6`).
+
+I appreciate the correction—it makes the architectural point clearer: the transport determines the **expressive power** of the stream, while `message.parts` is just the common UI shape that both transports populate to different degrees.
