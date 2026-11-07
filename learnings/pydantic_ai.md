@@ -372,3 +372,101 @@ Pydantic AI sees "the LLM wants to call `create_expense`, but this tool requires
 This separation is exactly why function calling is safe: **the model proposes, your code disposes.** The model can only emit JSON that _looks_ like a call to your tool; it has no ability to run arbitrary code, read your environment variables, or touch your database. Your `requires_approval=True` adds a second layer — even a _valid_ proposal requires a human "yes" before your side-effectful code runs.
 
 This is the fundamental pattern you'll use for almost every production agentic app: **the LLM is a structured-output generator, not an executor.** Your Python code is the only thing with real capabilities, and you gate it however you like (approval, rate limits, auth checks, dry-runs).
+
+# Is the LLM stateless, and is the entire history + schemas resent every time?
+
+**Yes, exactly.** The LLM has no memory. It is a pure function: `(messages, tools) → next_message`. Every single inference call is independent and knows nothing about previous calls except what is explicitly included in the payload.
+
+### Where the history actually lives
+
+In your frontend, `useChat` stores the `messages` array in **React component state** — nothing more. There is no automatic write to `localStorage`, a database, or a cookie. When the component unmounts (navigation, page reload, tab close), the history is **gone**. This is not a bug; Vercel made it a deliberate non-decision, leaving persistence to the developer.
+
+### What gets sent on each request
+
+Your `DefaultChatTransport` ships the **entire `messages` array** to `http://localhost:8000/llm` on every `sendMessage` call. The Vercel AI SDK documentation confirms that `useChat()` calls `sendMessages()` with the **full message array** and a `trigger` field. A stateless demo explicitly "ships the whole array each turn (`{ id, messages, trigger, messageId }`)".
+
+On the backend, `VercelAIAdapter.dispatch_request` receives that array, and Pydantic AI **reconstructs the conversation** by sending it to Groq. The tool schemas (generated from your `create_expense` type hints) are also injected into every LLM call. The LLM has no persistent memory of `create_expense` between calls; it re-reads the schema fresh every time.
+
+### The full request lifecycle (stateless slice)
+
+```
+Client (React state: messages[])
+  └─ sendMessage({ text: "..." })
+       └─ DefaultChatTransport.fetch → POST /llm
+            ├─ Authorization: Bearer <supabase JWT>
+            └─ Body: { messages: [...ALL_PRIOR_MESSAGES, newMessage], trigger: ... }
+                 │
+                 ▼
+Backend (FastAPI /llm)
+  └─ VercelAIAdapter.dispatch_request
+       ├─ Converts UIMessage[] → ModelMessage[]
+       ├─ Injects system_prompt + tool schemas
+       ├─ Calls Groq (LLM sees ONLY what was sent)
+       └─ Streams response back as SSE events
+            │
+            ▼
+Client receives events → useChat reduces them into messages[]
+```
+
+**Key implication:** if the client loses its `messages` array, the conversation is unrecoverable from the server side — because the server never stored it in the first place.
+
+### Persistence is something you must build
+
+The standard pattern is to write messages to a database after each exchange and load them back via the `messages` prop on the next visit. But there are sharp edges:
+
+- `useChat` works with `UIMessage` objects; the model expects `ModelMessage` objects. You must convert in both directions, and the return trip (stored → `UIMessage`) is not a single documented function call.
+- For **deferred tool approvals specifically**, there is a known Pydantic AI bug: `dump_messages()` loses the `approval` metadata when reconstructing messages for reload, so the approve/reject UI disappears after a page refresh. You would need to manually patch the dumped output to re-inject `approval: { id: toolCallId }` on pending deferred tool parts.
+
+This is why the AI SDK's **built-in stream resumption only covers one narrow case**: reconnecting to a generation that is _still actively running_ after a page reload. Returning to a _completed_ conversation is a separate problem that requires a real persistence layer.
+
+# If the server crashes mid-run, is all progress lost?
+
+**Yes, in your current architecture, everything is lost.** Your `ToolLoopAgent` (the default `Agent` in Pydantic AI) runs entirely **in memory**. If the process crashes, the function times out, or the deployment restarts, the agent's progress is gone. The user must start from scratch.
+
+This is the fundamental limitation of a **stateless request/response** design applied to a **multi-step agent loop**.
+
+### Why this is a real problem (not just an edge case)
+
+Your workflow already has the shape that breaks under crashes:
+
+1. **Multiple LLM round-trips** (parse → tool call → resume → final reply).
+2. **A human-in-the-loop pause** that can last seconds, minutes, or days. If the server holds the deferred state only in memory, a restart during the approval wait destroys the pending tool call entirely.
+3. **A side-effectful tool** (`create_expense`) that must **not** run twice if a retry happens after a partial failure.
+
+The standard production workaround is an **assembly**: keep the agent loop in a framework, add a durability engine (Temporal, Restate, DBOS), and stand up Postgres or Redis for checkpoints. Every seam becomes something you build, secure, and pay for.
+
+### The solution: durable execution
+
+Durable execution engines solve this by **checkpointing every model call and every tool call** to persistent storage. If the process dies at step N, a new process resumes from the last completed step — no re-spent tokens, no lost approvals, no duplicated side effects.
+
+For your Pydantic AI stack specifically, there are several paths:
+
+| Approach                     | How it works                                                                                                                                                                                                                                               | Trade-off                                                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| **Temporal + Pydantic AI**   | Native integration: the agent runs as a Temporal Workflow; each LLM/tool call is an Activity with recorded history. Crashes resume from the last completed Activity.                                                                                       | Requires Temporal infrastructure; best for complex, long-running workflows. |
+| **DBOS / Prefect / Restate** | Pydantic AI supports nine durable execution engines plus a builder for custom engines. DBOS is lightweight and Postgres-native.                                                                                                                            | Varies by engine; DBOS is a good middle-ground.                             |
+| **`pydantic-ai-durable`**    | A library that wraps Pydantic AI with checkpointing over SQLite/Postgres. Turns auto-resume from the last checkpoint; mutating tools never duplicate on replay.                                                                                            | Newer library; adds a dependency layer.                                     |
+| **Vercel WorkflowAgent**     | If you move the agent loop to Vercel's Workflow SDK, each tool call becomes a durable workflow step. Tools marked `needsApproval` suspend the workflow and resume automatically when the user responds — surviving process restarts and function timeouts. | Vercel-specific; best if you are deploying on Vercel.                       |
+
+### What the durable flow looks like
+
+```
+Without durability:
+  LLM Call → Tool Call → [CRASH] → Everything lost
+
+With durability (e.g., Temporal/Restate):
+  LLM Call (checkpointed) → Tool Call (checkpointed) → [CRASH]
+    └─ New process starts → replays from last checkpoint → continues
+```
+
+For your specific `create_expense` tool, durability also gives you **replay safety**: if a crash happens after the Supabase insert but before the agent acknowledges it, a naive retry would create a **duplicate expense**. Durable engines solve this with idempotency keys or replay guards that mark mutating tools as "never duplicate on retry".
+
+### Summary
+
+| Question                                   | Answer                                                                                                                                                                                                                                 |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Is the LLM stateless?**                  | **Yes.** Every call is independent. It only knows what is in the `messages` array and `tools` schema sent in that specific request.                                                                                                    |
+| **Is the full history resent every time?** | **Yes.** `useChat` ships the entire `messages` array to your backend, which forwards it to Groq. There is no server-side conversation memory by default.                                                                               |
+| **Where is history stored?**               | **React component state only** (in your current code). Unmounting the component or reloading the page erases it. You must build server-side persistence yourself.                                                                      |
+| **Does a server crash lose all progress?** | **Yes.** The default `ToolLoopAgent` runs in memory. A crash during a multi-step loop, a human approval wait, or a tool call discards everything.                                                                                      |
+| **What is the production fix?**            | **Durable execution** — checkpoint every LLM and tool step to persistent storage so a new process can resume from the last completed step. Temporal, DBOS, Restate, or `pydantic-ai-durable` are the standard choices for Pydantic AI. |
