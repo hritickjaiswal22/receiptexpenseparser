@@ -470,3 +470,90 @@ For your specific `create_expense` tool, durability also gives you **replay safe
 | **Where is history stored?**               | **React component state only** (in your current code). Unmounting the component or reloading the page erases it. You must build server-side persistence yourself.                                                                      |
 | **Does a server crash lose all progress?** | **Yes.** The default `ToolLoopAgent` runs in memory. A crash during a multi-step loop, a human approval wait, or a tool call discards everything.                                                                                      |
 | **What is the production fix?**            | **Durable execution** — checkpoint every LLM and tool step to persistent storage so a new process can resume from the last completed step. Temporal, DBOS, Restate, or `pydantic-ai-durable` are the standard choices for Pydantic AI. |
+
+# Confirmation flow
+
+Your step-by-step intuition is **almost entirely correct**—but there is one crucial architectural correction: **it is not a single, long-lived HTTP request that stays open while the human thinks.** The flow is deliberately split into **at least two separate agent runs**, across two separate HTTP round-trips. The connection closes the moment the agent hits the approval gate, and a **new** connection is opened when the human responds.
+
+Here is the corrected, precise version of your flow.
+
+---
+
+### ✅ The flow, with the critical correction
+
+Your steps 1–4 are correct:
+
+1. User sends the request text.
+2. Backend starts the agent loop.
+3. Full context (history + schemas) is sent to the LLM.
+4. LLM returns a structured tool call for `create_expense`.
+
+**Step 5 is where the split happens.** Pydantic AI does **not** keep the connection open to wait for the human. Instead:
+
+> **5a.** The agent **ends the run immediately** and returns a `DeferredToolRequests` object. The SSE stream closes. The backend sends a `tool-approval-request` chunk to the frontend (if `sdk_version=6` is set correctly) and then **terminates the HTTP response**.
+>
+> **5b.** The frontend receives this, renders the approval UI, and **waits**—but it is no longer holding any server connection.
+
+Steps 6–9 then happen on a **brand-new request**:
+
+> **6.** User clicks “Approve.”
+>
+> **7.** The frontend **automatically sends a new HTTP request** (thanks to `sendAutomaticallyWhen={lastAssistantMessageIsCompleteWithApprovalResponses}`). This new request includes the **entire message history** from the first round **plus** the approval decision.
+>
+> **8.** The backend receives this, parses the approval decision into a `DeferredToolResults` object, and **starts a fresh agent run** with `message_history` and `deferred_tool_results`. This new run **executes the actual tool** (the Supabase insert) and continues the loop—potentially calling the LLM again with the tool result.
+>
+> **9.** The second run completes and streams its final response back. This second connection then closes.
+
+Pydantic AI’s documentation is explicit about this: when a deferred tool is encountered, the run **ends** with `DeferredToolRequests`; the caller then “starts a new agent run with the original run’s message history plus a `DeferredToolResults` object”. It further states: “That follow-up is a **separate agent run** with its own `run_id` (do not reuse the paused run’s); keep pause/resume correlation via `conversation_id`”.
+
+---
+
+### 🔌 How does the agent “know” when to end the connection?
+
+It does **not** wait for the human and then decide to close. The decision is deterministic and **pre-programmed**:
+
+> **The agent ends the connection the instant it encounters a tool whose `requires_approval=True` (or that raises `ApprovalRequired`).**
+
+There is no timeout logic, no polling, and no “wait for approval” loop inside the agent. The agent’s job is simply: _run until you hit a deferred tool, then stop and report._ The `DeferredToolRequests` object **is** the end-of-stream signal. The SSE stream naturally closes when the agent run finishes.
+
+The “knowing when to end” is therefore not a runtime judgment—it is a **structural consequence** of the tool being marked as deferred. The agent cannot execute it, so it has nothing left to do; it returns control to the caller.
+
+---
+
+### 🧠 Why this design is intentional
+
+If the server kept a single connection open during a human approval wait, you would run into severe problems:
+
+| Single long-lived connection (your assumption)                                                                           | Split runs (actual design)                                                                          |
+| ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| A function timeout (e.g., 30s on Vercel, 60s on many platforms) would kill the request while the user is still thinking. | The first connection closes cleanly; the second starts fresh whenever the user is ready.            |
+| A server restart during the approval wait would lose the pending tool call.                                              | The pending state lives in the **client’s message history**, so a server restart does not erase it. |
+| You would hold a worker/thread hostage for minutes or hours.                                                             | Workers are freed immediately after emitting the deferred request.                                  |
+| Scaling would be impossible—every pending approval consumes a live connection.                                           | Statelessness enables horizontal scaling.                                                           |
+
+This is why Pydantic AI’s deferred-tool docs emphasize that the **stateless, functional** design is deliberate. The “state” of the approval is carried in the **conversation history** that the client persists and resends, not in a server-side connection.
+
+---
+
+### 📦 What actually bridges the two runs?
+
+The bridge is entirely on the **frontend side**, orchestrated by the Vercel AI SDK:
+
+- The first SSE stream ends with a `tool-approval-request` chunk (enabled by `sdk_version=6`). This chunk contains the `approval.id` that your UI uses in `addToolApprovalResponse`.
+- When the user clicks Approve or Deny, `addToolApprovalResponse` mutates the client-side message state.
+- `sendAutomaticallyWhen={lastAssistantMessageIsCompleteWithApprovalResponses}` detects that all pending approval responses are present and **automatically triggers a new `sendMessage` call**, which sends the full history + approval response to the backend.
+- The backend’s `VercelAIAdapter` parses those `approval-responded` parts into `DeferredToolResults` and runs the agent again.
+
+So the “continuation” is not a server-held promise—it is a **new request triggered by the client**, carrying the entire state needed to resume.
+
+### 🧾 Summary correction
+
+| Your assumption                                                              | Reality                                                                                                       |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| One HTTP request persists for the entire duration.                           | **Two (or more) separate HTTP requests**: one to reach the deferred state, another to resume after approval.  |
+| The agent waits for the human on the same connection.                        | The agent **ends immediately** upon hitting a deferred tool; the connection closes.                           |
+| The server knows when to close because it decides the approval wait is over. | The server closes **when the agent run ends**, which happens deterministically at the deferred tool boundary. |
+| Progress is held in server memory during the wait.                           | Progress is held in the **client’s message history**; the server is stateless between runs.                   |
+| The user “hopefully approves” and it “reaches” the server.                   | The frontend **actively sends a new request** with `sendAutomaticallyWhen`; it is not a passive wait.         |
+
+Your mental model of the **logic** was right; the **transport mechanics** are the part to adjust. The system is intentionally **stateless and connection-agnostic**, which is what makes it survivable across crashes, timeouts, and scale—the very properties you identified as missing in your previous question.
