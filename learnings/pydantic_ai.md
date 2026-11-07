@@ -93,3 +93,282 @@ async def get_user_info(ctx: RunContext[MyDeps], user_id: int) -> str:
 ```
 
 **In short:** `RunContext` is the mechanism that allows you to cleanly provide your agent's tools with the **dependencies** they need to do their job, without using global variables or hardcoding values.
+
+# Code
+
+The code sets up a FastAPI backend that uses an AI agent to parse natural language into structured expense data. The most important concept here is **human-in-the-loop (HITL) approval**: the agent is allowed to _propose_ a database write, but it cannot actually execute it until a human explicitly approves.
+
+Here is an in-depth explanation of how the two files work together.
+
+---
+
+### 🧠 `llm_client.py` — The AI Agent & the Approval Gate
+
+This file defines the "brain" of the application: a Pydantic AI `Agent` configured to use a Groq-hosted LLM. It also defines the one tool the agent is allowed to use, with a critical safety guardrail.
+
+#### 1. Model Setup (Groq Provider)
+
+```python
+custom_provider = GroqProvider(api_key=my_key)
+model = GroqModel("openai/gpt-oss-120b", provider=custom_provider)
+```
+
+Here you create a `GroqModel` that points to the `openai/gpt-oss-120b` model served by Groq. The `GroqProvider` handles authentication and communication with Groq’s API using your `LLM_API_KEY`. This is a standard pattern in Pydantic AI for using Groq as a model backend.
+
+#### 2. Agent Definition & Structured Output
+
+```python
+agent = Agent(
+    model,
+    output_type=[ExpenseToolInput, DeferredToolRequests],
+    system_prompt="...",
+    retries={'output': 3}
+)
+```
+
+The `Agent` is the core orchestrator. Its `output_type` is a **union**: `[ExpenseToolInput, DeferredToolRequests]`. This tells the agent it can produce one of two kinds of final outputs:
+
+- **`ExpenseToolInput`**: A structured Pydantic model (defined elsewhere in your project) that represents parsed expense data.
+- **`DeferredToolRequests`**: A special Pydantic AI type that signifies “I want to call a tool, but this call must be deferred for human approval.” This is the linchpin of the HITL flow.
+
+The `system_prompt` instructs the model to parse text and _always call the `create_expense` tool_, which will trigger the approval process. The `retries` parameter allows the agent to automatically retry output generation up to 3 times if the model produces invalid structured data.
+
+#### 3. The Tool with `requires_approval=True`
+
+```python
+@agent.tool(requires_approval=True)
+async def create_expense(ctx: RunContext, ...) -> str:
+    ...
+```
+
+This is the crucial part. The decorator `@agent.tool(requires_approval=True)` registers the `create_expense` function as a tool _and_ marks it as requiring human approval. **Because of this flag, the agent will never execute the function directly.** Instead, when the LLM decides to call `create_expense`, Pydantic AI intercepts that call and ends the agent run early, returning a `DeferredToolRequests` object that contains the proposed tool arguments (date, merchant, amount, etc.).
+
+If a human later approves the request, the `create_expense` function body finally runs. It extracts the `user_id` from `ctx.deps` (dependency injection), builds an `expense_data` dictionary, and inserts a new row into the `expenses` table via your Supabase client. This design keeps the tool function clean and focused on the actual database write, while the approval logic is handled externally.
+
+---
+
+### ⚙️ `main.py` — The FastAPI Backend & the HITL Bridge
+
+This file exposes an HTTP endpoint (`POST /llm`) that the frontend calls. Its primary job is to bridge the gap between your Pydantic AI agent and the Vercel AI SDK frontend, which understands how to render approval buttons.
+
+#### 1. Lifespan Management
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await database.init_supabase()
+    yield
+    await database.close_supabase()
+```
+
+This is a modern FastAPI pattern for managing resources that should be shared across the application’s lifetime. On startup, it initializes the Supabase client; on shutdown, it closes the connection. This avoids creating a new database connection for every request.
+
+#### 2. CORS Middleware
+
+The `CORSMiddleware` configuration allows your Next.js frontend (running on `localhost:3000`) to make authenticated requests to this backend. It permits credentials (like the `Authorization` header), which is necessary because the `/llm` endpoint requires a logged-in user.
+
+#### 3. The `/llm` Endpoint (The Core Bridge)
+
+```python
+@app.post("/llm")
+async def parse_expense_endpoint(
+    request: Request,
+    user: dict = Depends(get_current_user)
+):
+    try:
+        deps = {"user_id": user["sub"]}
+        return await VercelAIAdapter.dispatch_request(
+            request,
+            agent=agent,
+            sdk_version=6,
+            deps=deps
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"LLM call failed: {e}")
+```
+
+This endpoint does three critical things:
+
+1. **Authentication & Dependency Injection**: It uses `Depends(get_current_user)` to ensure the user is logged in. It then packages the user’s ID into a `deps` dictionary and passes it to the agent. This is how `ctx.deps.get("user_id")` inside `create_expense` gets its value.
+2. **`VercelAIAdapter.dispatch_request`**: This single line is the workhorse. It takes the raw `Request` from the frontend, the configured `agent`, and the `deps`. It handles the entire agent execution loop: calling the LLM, parsing the response, detecting deferred tool requests, and formatting the result into a **Server-Sent Events (SSE) stream** that the Vercel AI SDK frontend can consume.
+3. **`sdk_version=6`**: This parameter is **essential for the approval flow**. It tells the adapter to use the Vercel AI SDK v6 streaming protocol, which includes special chunk types for tool approval, such as `tool-approval-request` and `tool-output-denied`. Without this, the frontend would not know how to render the “Approve / Deny” interface for the `create_expense` tool.
+
+---
+
+### 🔄 How the Full Human-in-the-Loop Flow Works
+
+Putting it all together, here is the sequence of events when a user types “Spent $20 at Starbucks yesterday”:
+
+1. **Frontend** sends the text to `POST /llm`.
+2. **`main.py`** authenticates the user, injects `user_id` into `deps`, and calls `VercelAIAdapter.dispatch_request`.
+3. **Pydantic AI** runs the agent. The Groq LLM parses the text and decides to call `create_expense` with arguments like `{merchant: "Starbucks", amount: 20.0, ...}`.
+4. **Because `requires_approval=True`**, Pydantic AI does **not** run `create_expense`. Instead, the agent run ends with a `DeferredToolRequests` output containing the proposed arguments.
+5. **`VercelAIAdapter`** (with `sdk_version=6`) translates this deferred request into a streaming event: `tool-approval-request`. It sends this SSE event to the frontend.
+6. **Frontend** (Vercel AI SDK) receives the event and renders an approval UI, showing the proposed expense details with “Approve” and “Deny” buttons.
+7. **User clicks “Approve”**. The frontend sends a follow-up request to the backend, including the approval decision (a `tool-approval-response` chunk).
+8. **`VercelAIAdapter`** on the backend detects the approval response and resumes the agent run with the necessary `DeferredToolResults`. Now, Pydantic AI finally executes the `create_expense` function.
+9. **`create_expense`** inserts the expense into the Supabase database and returns a success message.
+10. The final result is streamed back to the frontend, and the UI updates to show the confirmed expense.
+
+This architecture cleanly separates concerns: the LLM handles the “thinking” (parsing), the tool handles the “doing” (database write), and the approval layer in between ensures that no irreversible action happens without human consent.
+
+---
+
+### 📚 Key Takeaway for Your Learning Path
+
+This is a **production-grade pattern** for building safe, agentic applications. The `requires_approval=True` flag combined with `DeferredToolRequests` is Pydantic AI’s way of implementing **deferred tool execution**—a stateless, functional approach to human-in-the-loop workflows. It allows the agent to remain stateless and scalable, while still giving humans ultimate control over side-effectful operations like database writes.
+
+If you want to deepen your understanding, explore how `DeferredToolResults` and `ToolDenied` are used to handle the resume step explicitly in cases where you need more granular control than the Vercel adapter provides.
+
+# Are 2+ LLMs in the cloud being used?
+
+**No — only one model is ever being used.** `GroqModel(...)` and `Agent(...)` are just **local Python objects**, not cloud resources. Nothing is "spawned" on Groq's servers when you instantiate them.
+
+Let's trace what each object actually is:
+
+```python
+model = GroqModel("openai/gpt-oss-120b", provider=custom_provider)
+```
+
+This creates a `GroqModel` instance in your Python process. It's essentially a **client wrapper** — it holds the model name, the API key, the base URL, and some retry/timeout config. Think of it like `requests.Session()`: it's a config object that _knows how to talk_ to Groq, but it doesn't start anything. No network call happens here.
+
+```python
+agent = Agent(model, output_type=..., system_prompt=..., retries=...)
+```
+
+This wraps `model` with **orchestration logic**: it stores the system prompt, the registered tools, the output schema, and the retry policy. Still 100% local Python — no LLM involved yet.
+
+### When does the LLM actually get invoked?
+
+The LLM runs **only** when `VercelAIAdapter.dispatch_request(...)` (or `agent.run(...)`) is called. At that moment, Pydantic AI makes an HTTP POST to Groq's API. Groq runs inference on `openai/gpt-oss-120b` and returns the response.
+
+**However**, a single `/llm` request can trigger **multiple LLM calls** — to the _same_ model — because of the agent loop:
+
+1. **Call #1** → LLM parses "Spent $20 at Starbucks" and outputs a tool call for `create_expense`.
+2. Pydantic AI sees `requires_approval=True` → **halts** the run and returns `DeferredToolRequests`. (No more LLM calls until the human approves.)
+3. User approves → frontend resends → **Call #2** → LLM sees the tool result ("Expense created with ID: 42") and generates a final natural-language reply.
+4. If output validation fails (structured output mismatch), the `retries={'output': 3}` can trigger up to 3 **more** calls to the same model.
+
+So: **one model, potentially multiple round-trips to it**. This is the "agent loop" — the LLM doesn't magically maintain state; each call re-sends the full conversation history (including tool results) to Groq.
+
+> 💡 **Mental model:** `GroqModel` = a phone number. `Agent` = your personal assistant who knows that phone number and a script. Calling the phone = one LLM inference. Multiple calls = multiple inferences, but always the same phone.
+
+# Q2: How does the cloud LLM know about `create_expense`? Is my code transferred?
+
+**Your code is never sent.** What _is_ sent is a **JSON description** of your tool's interface — generated locally by Pydantic AI from your Python type hints. This is the **function calling** (a.k.a. "tool use") protocol.
+
+Here's the exact pipeline:
+
+### Step 1: Pydantic AI introspects your function (locally)
+
+When you decorate `create_expense` with `@agent.tool(...)`, Pydantic AI uses Python's `inspect` module to read:
+
+- The function **name**: `"create_expense"`
+- The **docstring** (used as the tool description): `"Create a new expense record in the database. Requires explicit user approval before execution."`
+- The **parameter names + type hints + defaults**: `date: str`, `merchant: str`, `amount: float`, `expense_category: ExpenseCategory`, `confidence: float`, `input_method: InputMethod`, `description: str | None = None`
+
+### Step 2: It converts those type hints into a JSON Schema (locally)
+
+Pydantic models like `ExpenseCategory` and `InputMethod` (which are presumably `Enum`s or Pydantic models) get turned into schemas. Roughly:
+
+```json
+{
+  "name": "create_expense",
+  "description": "Create a new expense record in the database. Requires explicit user approval before execution.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "date": { "type": "string" },
+      "merchant": { "type": "string" },
+      "amount": { "type": "number" },
+      "expense_category": { "type": "string", "enum": ["food", "transport", "utilities", ...] },
+      "confidence": { "type": "number" },
+      "input_method": { "type": "string", "enum": ["text", "voice", ...] },
+      "description": { "type": ["string", "null"], "default": null }
+    },
+    "required": ["date", "merchant", "amount", "expense_category", "confidence", "input_method"]
+  }
+}
+```
+
+**This is the only thing about your tool that crosses the network.** The function body — the Supabase insert, the `ctx.deps.get("user_id")`, the error handling — **stays on your machine forever**.
+
+### Step 3: On each LLM call, Pydantic AI attaches that schema to the request
+
+When the agent calls Groq, the HTTP payload (OpenAI-compatible format) looks conceptually like:
+
+```json
+{
+  "model": "openai/gpt-oss-120b",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a helpful expense parsing assistant..."
+    },
+    { "role": "user", "content": "Spent $20 at Starbucks yesterday" }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        /* the JSON schema above */
+      }
+    }
+  ],
+  "tool_choice": "auto"
+}
+```
+
+The model (`gpt-oss-120b`) was **trained** to understand this `tools` field. It reads the schema as part of its context and learns: _"There's a callable named `create_expense` that takes these seven arguments, each with these types and enums."_
+
+### Step 4: The LLM emits a tool _call_ (structured JSON), not code
+
+When the model decides to use the tool, it doesn't run anything. It outputs a structured message like:
+
+```json
+{
+  "role": "assistant",
+  "content": null,
+  "tool_calls": [
+    {
+      "id": "call_abc123",
+      "type": "function",
+      "function": {
+        "name": "create_expense",
+        "arguments": "{\"date\":\"2024-01-15\",\"merchant\":\"Starbucks\",\"amount\":20.0,\"expense_category\":\"food\",\"confidence\":0.95,\"input_method\":\"text\"}"
+      }
+    }
+  ]
+}
+```
+
+That's it. The LLM's "knowledge" of your tool is limited to **this schema** — nothing more.
+
+### Step 5: Validation happens **locally**, not on Groq
+
+Pydantic AI receives that `arguments` JSON string, parses it, and validates it against your **actual Pydantic models** (`ExpenseToolInput`, `ExpenseCategory`, etc.) — running in _your_ Python process. If the LLM hallucinated an invalid enum value or a negative amount (assuming you added `Field(gt=0)`), validation fails locally and Pydantic AI may retry the LLM.
+
+> ⚠️ **Important subtlety:** If you add constraints like `Field(ge=0, le=10000)` on `amount`, Pydantic AI does send those _as part of the JSON schema description_ (e.g., `"minimum": 0, "maximum": 10000`), so the LLM is _informed_. But the LLM is **not trusted** to enforce them — the enforcement is done by Pydantic during validation. The schema is a hint; the Pydantic model is the source of truth.
+
+### Step 6: Because of `requires_approval=True`, execution is deferred
+
+Pydantic AI sees "the LLM wants to call `create_expense`, but this tool requires approval" → it **stops** the run and packages the proposed arguments into a `DeferredToolRequests` object. The frontend renders the approval UI. Only after you approve does the local `create_expense` body run.
+
+---
+
+## Summary Table
+
+| Concept                                                                 | Where it lives                     | Sent to Groq?                                                 |
+| ----------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------- |
+| `GroqModel`, `Agent` objects                                            | Your Python process                | No                                                            |
+| Function body of `create_expense` (Supabase insert, etc.)               | Your Python process                | **Never**                                                     |
+| Docstring of `create_expense`                                           | Your Python process                | Yes, as `tool.description`                                    |
+| Parameter names + type hints                                            | Your Python process                | Yes, as JSON Schema                                           |
+| Pydantic validation logic (`ExpenseCategory` enum, `Field` constraints) | Your Python process                | Only the _schema description_; validation itself runs locally |
+| LLM weights (`gpt-oss-120b`)                                            | Groq's servers                     | —                                                             |
+| The LLM's tool call (JSON)                                              | Generated on Groq, returned to you | Yes (in the response)                                         |
+| `user_id`, Supabase credentials, DB row                                 | Your backend                       | **Never**                                                     |
+
+This separation is exactly why function calling is safe: **the model proposes, your code disposes.** The model can only emit JSON that _looks_ like a call to your tool; it has no ability to run arbitrary code, read your environment variables, or touch your database. Your `requires_approval=True` adds a second layer — even a _valid_ proposal requires a human "yes" before your side-effectful code runs.
+
+This is the fundamental pattern you'll use for almost every production agentic app: **the LLM is a structured-output generator, not an executor.** Your Python code is the only thing with real capabilities, and you gate it however you like (approval, rate limits, auth checks, dry-runs).
