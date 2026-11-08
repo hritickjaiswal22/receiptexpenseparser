@@ -5,7 +5,10 @@
 
 import { useChat } from "@ai-sdk/react";
 import { useEffect, useMemo, useState } from "react";
-import { DefaultChatTransport, TextStreamChatTransport } from "ai";
+import {
+  DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithApprovalResponses,
+} from "ai";
 import { useRouter } from "next/navigation";
 
 import { createClient } from "@/lib/supabase";
@@ -19,16 +22,14 @@ function ChatApp() {
 
   const transport = useMemo(
     () =>
-      new TextStreamChatTransport({
+      new DefaultChatTransport({
         api: "http://localhost:8000/llm",
         fetch: async (input, init) => {
           const supabase = createClient();
           const {
             data: { session },
           } = await supabase.auth.getSession();
-
           if (!session) throw new Error("Not authenticated");
-
           return fetch(input, {
             ...init,
             headers: {
@@ -42,9 +43,12 @@ function ChatApp() {
   );
 
   // 2. Initialize useChat using the modern transport pattern
-  const { messages, sendMessage, error } = useChat({
-    transport,
-  });
+  const { messages, sendMessage, error, status, addToolApprovalResponse } =
+    useChat({
+      transport,
+      sendAutomaticallyWhen:
+        lastAssistantMessageIsCompleteWithApprovalResponses,
+    });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -65,7 +69,7 @@ function ChatApp() {
   }, []);
 
   console.log(messages);
-  console.log(user);
+  console.log(error);
 
   if (authLoading) return <h1>Auth Loading...</h1>;
 
@@ -79,7 +83,7 @@ function ChatApp() {
             id="messages-container"
             className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6"
           >
-            <div id="messages-list" className="max-w-3xl mx-auto space-y-6">
+            <div className="max-w-3xl mx-auto space-y-6">
               {messages.map((message) => (
                 <div
                   key={message.id}
@@ -94,6 +98,7 @@ function ChatApp() {
                   </div>
 
                   {message.parts.map((part, index) => {
+                    // Render standard text
                     if (part.type === "text") {
                       return (
                         <p key={index} className="text-black">
@@ -101,6 +106,72 @@ function ChatApp() {
                         </p>
                       );
                     }
+
+                    // 3. Render tool approval UI
+                    if (part.type === "tool-create_expense") {
+                      if (part.state === "approval-requested") {
+                        return (
+                          <div
+                            key={index}
+                            className="mt-3 p-4 border rounded-xl bg-gpt-main shadow-sm"
+                          >
+                            <p className="text-sm font-medium mb-2">
+                              Confirm expense to be saved?
+                            </p>
+                            <pre className="text-xs bg-gpt-main text-white p-2 rounded mb-3 overflow-auto">
+                              {JSON.stringify(part.input, null, 2)}
+                            </pre>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() =>
+                                  addToolApprovalResponse({
+                                    id: part.approval.id,
+                                    approved: true,
+                                  })
+                                }
+                                className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700"
+                              >
+                                Yes, save it
+                              </button>
+                              <button
+                                onClick={() =>
+                                  addToolApprovalResponse({
+                                    id: part.approval.id,
+                                    approved: false,
+                                  })
+                                }
+                                className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700"
+                              >
+                                No, cancel
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      // Render result after decision
+                      if (part.state === "output-available") {
+                        return (
+                          <div
+                            key={index}
+                            className="mt-2 text-sm text-green-700 bg-green-50 p-2 rounded"
+                          >
+                            ✓ {part.output}
+                          </div>
+                        );
+                      }
+                      if (part.state === "output-denied") {
+                        return (
+                          <div
+                            key={index}
+                            className="mt-2 text-sm text-red-700 bg-red-50 p-2 rounded"
+                          >
+                            ✗ Expense cancelled by user.
+                          </div>
+                        );
+                      }
+                    }
+
                     return null;
                   })}
                 </div>
