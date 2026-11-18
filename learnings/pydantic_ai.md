@@ -1,6 +1,7 @@
 https://chat.deepseek.com/a/chat/s/ce6332f3-1892-49b4-bb6f-1b492081ddbd
 https://chat.deepseek.com/a/chat/s/ff104f09-89e8-4bbd-90d5-b5b065b133b2
 https://chat.deepseek.com/a/chat/s/10c998eb-1919-48e1-9c61-95d6c794c768
+https://chat.deepseek.com/a/chat/s/fb2d413c-ef42-4e29-990b-bc624ef3199e
 
 # Learning Objectives
 
