@@ -1,12 +1,11 @@
 from pydantic_ai import Agent, DeferredToolRequests, RunContext
 from pydantic_ai.models.groq import GroqModel
 from pydantic_ai.providers.groq import GroqProvider
-from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 import os
 from dotenv import load_dotenv
 
 from app import database
-from app.schemas import ExpenseToolInput, ExpenseCategory, InputMethod
+from app.schemas import ExpenseBatch, ExpenseToolInput, List
 
 load_dotenv()
 
@@ -20,27 +19,26 @@ model = GroqModel(
 )
 
 # 1. Define agent with structured output type
+# Pydantic AI tracks two independent retry budgets:
+
+# Output retries: Governed by retries={'output': N} (which you set to 3). This handles cases where the model's final structured output fails validation.
+
+# Tool retries: Governed by retries={'tools': N}. This is a separate budget with a default value of 1 if not explicitly configured.
 agent = Agent(
     model,
-    output_type=[ExpenseToolInput, DeferredToolRequests],
-    system_prompt="You are a helpful expense parsing assistant. Parse the user's text into the required expense schema. Always call the create_expense tool to record it, which will prompt the user for approval.",
-    retries={'output': 3}
+    output_type=[ExpenseBatch, DeferredToolRequests],
+    system_prompt="You are a helpful expense parsing assistant. Parse the user's text into the required expense schema. If the input contains multiple expenses, include all of them in a single list. Always call the create_expense tool once with the full list to record it, which will prompt the user for approval.",
+    retries={'output': 3,"tools": 3 }
 )
 
 # 2. Mark the DB tool to require human approval
 @agent.tool(requires_approval=True)
 async def create_expense(
     ctx: RunContext,
-    date: str, 
-    merchant: str, 
-    amount: float, 
-    expense_category: ExpenseCategory, 
-    confidence: float, 
-    input_method: InputMethod,
-    description: str | None = None
+    expenses: List[ExpenseToolInput], 
 ) -> str:
     """
-    Create a new expense record in the database. 
+    Create new expense records in the database. 
     Requires explicit user approval before execution.
     """
     # Access deps directly from ctx
@@ -49,18 +47,15 @@ async def create_expense(
     if not user_id:
         return "Error: No authenticated user context found."
 
-    expense_data = {
-        "date": date,
-        "merchant": merchant,
-        "amount": amount,
-        "description": description,
-        "expense_category": expense_category,
-        "confidence": confidence,
-        "input_method": input_method,
-        "user_id": user_id
-    }
+    expense_records = [
+        {
+            **expense.model_dump(mode='json'),  # if ExpenseToolInput is a Pydantic model
+            "user_id": user_id,
+        }
+        for expense in expenses
+    ]
     
-    response = await database.supabase_client.table("expenses").insert(expense_data).execute()
+    response = await database.supabase_client.table("expenses").insert(expense_records).execute()
     if not response.data:
         return "Failed to insert expense: no data returned."
     return f"Expense created successfully with ID: {response.data[0]['id']}"
