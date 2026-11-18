@@ -1,3 +1,5 @@
 1. Multi Row insertion
 2. Expenses Confirmation Card rendering
 3. Image inputs
+4. Error Handling
+5. Loading UI handling (for text input cases like "I spent 650 rupees on an educational course 200 rupees on transportation 500 rupees on groceries on 17th Nov 2026")

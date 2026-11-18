@@ -80,3 +80,6 @@ class ExpenseToolInput(BaseModel):
     confidence: float = Field(description="Confidence score of the extraction, between 0 and 1.")
     input_method: InputMethod = Field(description="How the expense was input, e.g., 'MANUAL', 'TEXT_PASTE', 'IMAGE'.")
     items: Optional[List[LineItem]] = Field(default=None, description="List of individual line items, if applicable.")
+
+class ExpenseBatch(BaseModel):
+    expenses: List[ExpenseToolInput]
