@@ -45,11 +45,7 @@ function PromptInput({
 
   return (
     <div className="max-w-3xl mx-auto relative w-full py-4">
-      <form
-        ref={formRef}
-        onSubmit={onSubmit}
-        className="bg-input rounded-2xl overflow-hidden"
-      >
+      <form ref={formRef} onSubmit={onSubmit} className="bg-input">
         <input
           ref={inputRef}
           type="file"

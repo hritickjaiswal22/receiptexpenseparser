@@ -83,9 +83,6 @@
   }
 }
 
-/* Tells Tailwind that 'dark' mode is triggered by a .dark class on a parent element */
-@custom-variant dark (&:where(.dark, .dark *));
-
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: var(--font-sans);
@@ -143,41 +140,7 @@
 }
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-  --card: #ffffff;
-  --card-foreground: #171717;
-  --popover: #ffffff;
-  --popover-foreground: #171717;
-  --primary: #10a37f;
-  --primary-foreground: #ffffff;
-  --secondary: #f4f4f5;
-  --secondary-foreground: #171717;
-  --muted: #f4f4f5;
-  --muted-foreground: #71717a;
-  --accent: #f4f4f5;
-  --accent-foreground: #171717;
-  --destructive: #dc2626;
-  --border: #e4e4e7;
-  --input: #e4e4e7;
-  --ring: #10a37f;
-  --chart-1: #10a37f;
-  --chart-2: #0ea5e9;
-  --chart-3: #8b5cf6;
-  --chart-4: #f59e0b;
-  --chart-5: #ef4444;
-  --radius: 0.625rem;
-  --sidebar: #f9fafb;
-  --sidebar-foreground: #171717;
-  --sidebar-primary: #10a37f;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #f4f4f5;
-  --sidebar-accent-foreground: #171717;
-  --sidebar-border: #e4e4e7;
-  --sidebar-ring: #10a37f;
-}
-
-.dark {
+  color-scheme: dark;
   --background: #212121;
   --foreground: #ececec;
   --card: #2f2f2f;
@@ -201,6 +164,7 @@
   --chart-3: #a78bfa;
   --chart-4: #fbbf24;
   --chart-5: #f87171;
+  --radius: 0.625rem;
   --sidebar: #171717;
   --sidebar-foreground: #ececec;
   --sidebar-primary: #10a37f;
