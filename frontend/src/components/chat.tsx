@@ -12,9 +12,11 @@ import {
 import { useRouter } from "next/navigation";
 
 import { createClient } from "@/lib/supabase";
+import PromptInput, { AttachmentFile } from "@/components/prompt-input";
 
 function ChatApp() {
   const [input, setInput] = useState("");
+  const [files, setFiles] = useState<AttachmentFile[]>([]);
   const [user, setUser] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const router = useRouter();
@@ -58,7 +60,24 @@ function ChatApp() {
     // Send the message as structured text parts
     sendMessage({ text: input });
     setInput(""); // Clear input
+    setFiles([]);
   };
+
+  function onAttach(event: React.ChangeEvent<HTMLInputElement>) {
+    const selected = event.target.files;
+    if (!selected) {
+      return;
+    }
+
+    setFiles((current) => [
+      ...current,
+      ...Array.from(selected, (file) => ({
+        id: crypto.randomUUID(),
+        name: file.name,
+      })),
+    ]);
+    event.target.value = "";
+  }
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => {
@@ -178,7 +197,8 @@ function ChatApp() {
               ))}
             </div>
           </div>
-          <div className="p-4 bg-gpt-main/90 backdrop-blur border-t border-transparent shrink-0">
+
+          {/* <div className="p-4 bg-gpt-main/90 backdrop-blur border-t border-transparent shrink-0">
             <div className="max-w-3xl mx-auto relative">
               <form
                 id="chat-form"
@@ -195,7 +215,15 @@ function ChatApp() {
                 ></input>
               </form>
             </div>
-          </div>
+          </div> */}
+
+          <PromptInput
+            files={files}
+            handleTextChange={(val) => setInput(val)}
+            onAttach={onAttach}
+            onSubmit={handleSubmit}
+            text={input}
+          />
         </main>
       </div>
     </>
