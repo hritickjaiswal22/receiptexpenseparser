@@ -10,9 +10,70 @@ import {
   lastAssistantMessageIsCompleteWithApprovalResponses,
 } from "ai";
 import { useRouter } from "next/navigation";
+import { CircleCheckIcon, LoaderCircleIcon, TerminalIcon } from "lucide-react";
 
 import { createClient } from "@/lib/supabase";
 import PromptInput, { AttachmentFile } from "@/components/prompt-input";
+import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import { Button } from "@/components/ui/button";
+import { Message, MessageContent } from "@/components/ui/message";
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceLine,
+  TraceTitle,
+  TraceIcon,
+} from "@/components/ui/trace";
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemMedia,
+  ItemTitle,
+} from "@/components/ui/item";
+import {
+  CodeBlock,
+  CodeBlockActions,
+  CodeBlockContent,
+  CodeBlockCopyButton,
+  CodeBlockHeader,
+  CodeBlockLine,
+  CodeBlockTitle,
+} from "@/components/ui/code-block";
+
+function ReasoningRow({
+  text,
+  running,
+  defaultOpen,
+}: {
+  text: string;
+  running: boolean;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  const line = (
+    <TraceLine status={running ? "running" : undefined}>
+      <TraceTitle>{running ? "Thinking" : "Thought for 5s"}</TraceTitle>
+    </TraceLine>
+  );
+
+  if (text.length === 0) {
+    return line;
+  }
+
+  return (
+    <TraceCollapsible open={open ?? running} onOpenChange={setOpen}>
+      <TraceCollapsibleTrigger>{line}</TraceCollapsibleTrigger>
+      <TraceCollapsibleContent className="whitespace-pre-wrap">
+        {text}
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
+  );
+}
 
 function ChatApp() {
   const [input, setInput] = useState("");
@@ -51,6 +112,8 @@ function ChatApp() {
       sendAutomaticallyWhen:
         lastAssistantMessageIsCompleteWithApprovalResponses,
     });
+
+  const busy = status === "submitted" || status === "streaming";
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -103,119 +166,167 @@ function ChatApp() {
             className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6"
           >
             <div className="max-w-3xl mx-auto space-y-6">
-              {messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`p-4 rounded-lg ${
-                    message.role === "user"
-                      ? "bg-blue-100 ml-auto"
-                      : "bg-gray-100"
-                  } max-w-[80%]`}
-                >
-                  <div className="font-semibold text-xs text-gray-500 uppercase mb-1">
-                    {message.role === "user" ? "User" : "AI"}
-                  </div>
-
-                  {message.parts.map((part, index) => {
-                    // Render standard text
-                    if (part.type === "text") {
-                      return (
-                        <p key={index} className="text-black">
-                          {part.text}
-                        </p>
-                      );
-                    }
-
-                    // 3. Render tool approval UI
-                    if (part.type === "tool-create_expense") {
-                      if (part.state === "approval-requested") {
-                        return (
-                          <div
-                            key={index}
-                            className="mt-3 p-4 border rounded-xl bg-gpt-main shadow-sm"
-                          >
-                            <p className="text-sm font-medium mb-2">
-                              Confirm expense to be saved?
-                            </p>
-                            <pre className="text-xs bg-gpt-main text-white p-2 rounded mb-3 overflow-auto">
-                              {JSON.stringify(part.input, null, 2)}
-                            </pre>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() =>
-                                  addToolApprovalResponse({
-                                    id: part.approval.id,
-                                    approved: true,
-                                  })
+              {messages.map((message) => {
+                if (message.role === "user") {
+                  return (
+                    <Message key={message.id} align="end">
+                      <MessageContent>
+                        <Bubble align="end" variant="muted">
+                          <BubbleContent>
+                            <>
+                              {message.parts.map((part, index) => {
+                                if (part.type === "text") {
+                                  return part.text;
                                 }
-                                className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700"
-                              >
-                                Yes, save it
-                              </button>
-                              <button
-                                onClick={() =>
-                                  addToolApprovalResponse({
-                                    id: part.approval.id,
-                                    approved: false,
-                                  })
-                                }
-                                className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700"
-                              >
-                                No, cancel
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      }
+                              })}
+                            </>
+                          </BubbleContent>
+                        </Bubble>
+                      </MessageContent>
+                    </Message>
+                  );
+                }
 
-                      // Render result after decision
-                      if (part.state === "output-available") {
-                        return (
-                          <div
-                            key={index}
-                            className="mt-2 text-sm text-green-700 bg-green-50 p-2 rounded"
-                          >
-                            ✓ {part.output}
-                          </div>
-                        );
-                      }
-                      if (part.state === "output-denied") {
-                        return (
-                          <div
-                            key={index}
-                            className="mt-2 text-sm text-red-700 bg-red-50 p-2 rounded"
-                          >
-                            ✗ Expense cancelled by user.
-                          </div>
-                        );
-                      }
-                    }
+                return (
+                  <Message key={message.id}>
+                    <MessageContent className="gap-4">
+                      {message.parts.map((part, index) => {
+                        const streaming = busy && message === messages.at(-1);
 
-                    return null;
-                  })}
-                </div>
-              ))}
+                        // if (part.type === "text") {
+                        //   return <p key={index}>{part.text}</p>;
+                        // }
+
+                        if (part.type === "reasoning") {
+                          return (
+                            <ReasoningRow
+                              key={index}
+                              text={part.text}
+                              running={streaming && part.state === "streaming"}
+                              defaultOpen={busy ? undefined : true}
+                            />
+                          );
+                        }
+
+                        if (part.type === "tool-create_expense") {
+                          if (part.state === "approval-requested") {
+                            return (
+                              <Item
+                                key={part.toolCallId}
+                                variant="outline"
+                                size="sm"
+                                className="flex-col items-stretch gap-3"
+                              >
+                                <div className="flex items-center gap-2">
+                                  <ItemMedia variant="icon">
+                                    <TerminalIcon />
+                                  </ItemMedia>
+                                  <ItemContent>
+                                    <ItemTitle>
+                                      Confirm expense to be saved?
+                                    </ItemTitle>
+                                  </ItemContent>
+                                </div>
+
+                                <CodeBlock className="w-full">
+                                  <CodeBlockHeader>
+                                    <CodeBlockTitle>Expense(s)</CodeBlockTitle>
+                                  </CodeBlockHeader>
+                                  <CodeBlockContent lang="json" lineNumbers>
+                                    {JSON.stringify(part.input, null, 2)}
+                                  </CodeBlockContent>
+                                </CodeBlock>
+
+                                <ItemActions>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() =>
+                                      addToolApprovalResponse({
+                                        id: part.approval.id,
+                                        approved: false,
+                                      })
+                                    }
+                                  >
+                                    Deny
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    onClick={() =>
+                                      addToolApprovalResponse({
+                                        id: part.approval.id,
+                                        approved: true,
+                                      })
+                                    }
+                                  >
+                                    Approve
+                                  </Button>
+                                </ItemActions>
+                              </Item>
+                            );
+                          }
+
+                          if (
+                            part.state === "output-available" ||
+                            part.state === "output-denied"
+                          ) {
+                            const denied = part.state === "output-denied";
+
+                            return (
+                              <Trace key={part.toolCallId}>
+                                <TraceLine
+                                  status={
+                                    !denied && part.state !== "output-available"
+                                      ? "running"
+                                      : undefined
+                                  }
+                                >
+                                  <TraceIcon>
+                                    <TerminalIcon />
+                                  </TraceIcon>
+                                  <TraceTitle>
+                                    {denied ? (
+                                      "Denied"
+                                    ) : part.state === "output-available" ? (
+                                      <div>
+                                        <CodeBlock className="w-full">
+                                          <CodeBlockHeader>
+                                            <CodeBlockTitle>
+                                              Saved
+                                            </CodeBlockTitle>
+                                          </CodeBlockHeader>
+                                          <CodeBlockContent
+                                            lang="json"
+                                            lineNumbers
+                                          >
+                                            {JSON.stringify(
+                                              part.input?.expenses ?? [],
+                                              null,
+                                              2,
+                                            )}
+                                          </CodeBlockContent>
+                                        </CodeBlock>
+                                      </div>
+                                    ) : (
+                                      "Running"
+                                    )}{" "}
+                                  </TraceTitle>
+                                </TraceLine>
+                              </Trace>
+                            );
+                          }
+                        }
+
+                        if (part.type === "tool-final_result") {
+                          return <p key={index}>{part.output}</p>;
+                        }
+                      })}
+                    </MessageContent>
+                  </Message>
+                );
+              })}
             </div>
           </div>
-
-          {/* <div className="p-4 bg-gpt-main/90 backdrop-blur border-t border-transparent shrink-0">
-            <div className="max-w-3xl mx-auto relative">
-              <form
-                id="chat-form"
-                className="relative bg-gpt-input rounded-2xl border border-gpt-border focus-within:border-gray-500 shadow-xl transition-all"
-                onSubmit={handleSubmit}
-              >
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  id="user-input"
-                  //   rows={1}
-                  placeholder="Message Expense GPT..."
-                  className="w-full bg-transparent text-gray-100 placeholder-gray-400 px-4 pt-3.5 pb-12 resize-none focus:outline-none max-h-48 text-sm md:text-base leading-relaxed"
-                ></input>
-              </form>
-            </div>
-          </div> */}
 
           <PromptInput
             files={files}
