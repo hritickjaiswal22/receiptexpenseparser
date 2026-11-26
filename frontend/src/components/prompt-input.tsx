@@ -21,6 +21,8 @@ import {
 export type AttachmentFile = {
   id: string;
   name: string;
+  type: string;
+  dataUrl: string;
 };
 
 interface PromptInputProps {
@@ -29,6 +31,7 @@ interface PromptInputProps {
   handleTextChange: (text: string) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onAttach: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onFileRemove: (id: string) => void;
 }
 
 function PromptInput({
@@ -37,11 +40,12 @@ function PromptInput({
   text,
   onAttach,
   onSubmit,
+  onFileRemove,
 }: PromptInputProps) {
   const formRef = React.useRef<HTMLFormElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
-  const canSend = text.trim().length > 0;
+  const canSend = text.trim().length > 0 || files.length > 0;
 
   return (
     <div className="max-w-3xl mx-auto relative w-full py-4">
@@ -69,7 +73,7 @@ function PromptInput({
                     <AttachmentAction
                       aria-label={`Remove ${file.name}`}
                       onClick={() => {
-                        console.log(file);
+                        onFileRemove(file.id);
                       }}
                     >
                       <XIcon />

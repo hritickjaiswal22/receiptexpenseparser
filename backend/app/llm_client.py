@@ -14,7 +14,7 @@ custom_provider = GroqProvider(api_key=my_key)
 
 # Initialize Pydantic AI Agent targeting Groq
 model = GroqModel(
-    "openai/gpt-oss-120b", 
+    "qwen/qwen3.8-27b", 
     provider=custom_provider
 )
 

@@ -118,28 +118,69 @@ function ChatApp() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!input.trim()) return;
+    if (!input.trim() && files.length === 0) return;
 
     // Send the message as structured text parts
-    sendMessage({ text: input });
+    sendMessage({
+      text: input,
+      files: files.map((file) => ({
+        type: "file",
+        mediaType: file.type || "application/octet-stream",
+        filename: file.name,
+        url: file.dataUrl, // This should be a data URL or a public URL
+      })),
+    });
     setInput(""); // Clear input
     setFiles([]);
   };
 
-  function onAttach(event: React.ChangeEvent<HTMLInputElement>) {
+  const onFileRemove = (id: string) => {
+    setFiles((prev) => prev.filter((file) => file.id !== id));
+  };
+
+  function fileToDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+        } else {
+          reject(new Error(`Failed to read "${file.name}" as a data URL.`));
+        }
+      };
+
+      reader.onerror = () => {
+        reject(reader.error ?? new Error(`Error reading "${file.name}".`));
+      };
+
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function onAttach(event: React.ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files;
-    if (!selected) {
+    if (!selected || selected.length === 0) {
       return;
     }
 
-    setFiles((current) => [
-      ...current,
-      ...Array.from(selected, (file) => ({
-        id: crypto.randomUUID(),
-        name: file.name,
-      })),
-    ]);
+    const fileList = Array.from(selected);
     event.target.value = "";
+
+    try {
+      const nextFiles: AttachmentFile[] = await Promise.all(
+        fileList.map(async (file) => ({
+          id: crypto.randomUUID(),
+          name: file.name,
+          type: file.type,
+          dataUrl: await fileToDataUrl(file),
+        })),
+      );
+
+      setFiles((current) => [...current, ...nextFiles]);
+    } catch (err) {
+      console.error("Failed to convert attached file(s):", err);
+    }
   }
 
   useEffect(() => {
@@ -150,7 +191,7 @@ function ChatApp() {
     });
   }, []);
 
-  console.log(messages);
+  console.log(messages, files);
   console.log(error);
 
   if (authLoading) return <h1>Auth Loading...</h1>;
@@ -334,6 +375,7 @@ function ChatApp() {
             onAttach={onAttach}
             onSubmit={handleSubmit}
             text={input}
+            onFileRemove={onFileRemove}
           />
         </main>
       </div>
